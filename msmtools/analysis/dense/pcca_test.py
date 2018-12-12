@@ -1,4 +1,3 @@
-
 # This file is part of MSMTools.
 #
 # Copyright (c) 2015, 2014 Computational Molecular Biology Group, Freie Universitaet Berlin (GER)
@@ -204,6 +203,52 @@ class TestPCCA(unittest.TestCase):
                              [1., 0.],
                              [1., 0.]])
         np.testing.assert_equal(chi, expected)
+
+    def test_pcca_non_reversible(self):
+        # general non-reversible matrix
+        P = np.random.rand(8, 8)
+        P = P / P.sum(axis=1)[:, np.newaxis]
+
+        if False:
+            # add some transition state
+            Pex = np.zeros((9, 9))
+            Pex[0:8, 0:8] = P
+            e = 0.001
+            Pex[8, 7] = e
+            Pex[8, 8] = 1 - e
+            P = Pex
+
+        # assert not msmtools.analysis.is_reversible(P)
+        evals = np.linalg.eig(P)[0]
+        order = np.argsort(np.abs(evals))[::-1]
+        sorted_evals = evals[order]
+
+        n = 3
+        if np.allclose(sorted_evals[n], np.conj(sorted_evals[n - 1])):
+            n += 1
+        dom_evals = sorted_evals[0:n]
+
+        M = pcca(P, n, reversible=False, fix_memberships=False)
+        P_c = np.linalg.inv(M.T.dot(M)).dot(M.T.dot(P).dot(M))
+        evals_c = np.linalg.eig(P_c)[0]
+        order_c = np.argsort(np.abs(evals_c))[::-1]
+        dom_evals_c = evals_c[order_c]
+        np.testing.assert_allclose(dom_evals, dom_evals_c)
+        np.testing.assert_allclose(P_c.sum(axis=1), 1.0)
+        np.testing.assert_array_less(-M-1.E-7, 0.0)
+
+        mu = np.random.rand(P.shape[0]) + 0.01
+        mu = mu / mu.sum()
+        M = pcca(P, n, reversible=False, fix_memberships=False, mu=mu)
+        MU = np.diag(mu)
+        P_c = np.linalg.inv(M.T.dot(MU).dot(M)).dot(M.T.dot(MU).dot(P).dot(M))
+        evals_c = np.linalg.eig(P_c)[0]
+        order_c = np.argsort(np.abs(evals_c))[::-1]
+        dom_evals_c = evals_c[order_c]
+        np.testing.assert_allclose(dom_evals, dom_evals_c)
+        np.testing.assert_allclose(P_c.sum(axis=1), 1.0)
+        np.testing.assert_array_less(-M-1.E-7, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

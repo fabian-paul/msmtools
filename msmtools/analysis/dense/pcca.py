@@ -1,4 +1,3 @@
-
 # This file is part of MSMTools.
 #
 # Copyright (c) 2015, 2014 Computational Molecular Biology Group, Freie Universitaet Berlin (GER)
@@ -218,8 +217,12 @@ def _fill_matrix(rot_crop_matrix, eigvectors):
 
     return rot_matrix
 
+def _valid_schur_dims(T):
+    r = np.where(np.abs(np.diag(T, -1)) > 100 * np.finfo(np.float64).eps)[0]
+    s = np.setdiff1d(np.arange(T.shape[0] + 1), r + 1)
+    return s
 
-def _pcca_connected(P, n, return_rot=False):
+def _pcca_connected(P, n, return_rot=False, reversible=True, fix_memberships=True, mu=None):
     """
     PCCA+ spectral clustering method with optimized memberships [1]_
 
@@ -257,7 +260,7 @@ def _pcca_connected(P, n, return_rot=False):
     # test connectivity
     from msmtools.estimation import connected_sets
 
-    labels = connected_sets(P)
+    labels = connected_sets(P, directed=True)
     n_components = len(labels)  # (n_components, labels) = connected_components(P, connection='strong')
     if (n_components > 1):
         raise ValueError("Transition matrix is disconnected. Cannot use pcca_connected.")
@@ -270,30 +273,45 @@ def _pcca_connected(P, n, return_rot=False):
     from msmtools.analysis import is_reversible
 
     if not is_reversible(P, mu=pi):
-        raise ValueError("Transition matrix does not fulfill detailed balance. "
-                         "Make sure to call pcca with a reversible transition matrix estimate")
-    # TODO: Susanna mentioned that she has a potential fix for nonreversible matrices by replacing each complex conjugate
-    #      pair by the real and imaginary components of one of the two vectors. We could use this but would then need to
-    #      orthonormalize all eigenvectors e.g. using Gram-Schmidt orthonormalization. Currently there is no theoretical
-    #      foundation for this, so I'll skip it for now.
+        if reversible:
+            raise ValueError("Transition matrix does not fulfill detailed balance. "
+                             "Make sure to call pcca with a reversible transition matrix estimate")
+        if mu is None:
+            mu = np.ones(P.shape[0]) / P.shape[0]
+        P_whitened = (mu**0.5)[:, np.newaxis]*P*(mu**-0.5)[np.newaxis, :]
+        from scipy.linalg import schur
+        from numpy.linalg import svd
+        from msmtools.util.sort_real_schur import sort_real_schur
+        R, Q = schur(P_whitened, output='real')
+        Q, R, ap = sort_real_schur(Q, R, z=float('inf'), b=0, inplace=True)
+        if n not in _valid_schur_dims(R):
+            warnings.warn(
+                'Kinetic coarse-graining with %d states cuts through a block of complex conjugate eigenvalues. '
+                'Result might be meaningless.' % n)
+        U, _, Vt = svd(Q[:, 0:n], full_matrices=False, compute_uv=True)
+        evecs = U.dot(Vt)  # make sure that the Schur vectors form an ONB after reordering
+        # make first Schur vector positive
+        evecs[:, 0] = np.abs(evecs[:, 0])
+        evecs = (mu**-0.5)[:, np.newaxis]*evecs
 
-    # right eigenvectors, ordered
-    from msmtools.analysis import eigenvectors
+    else:
+        # right eigenvectors, ordered
+        from msmtools.analysis import eigenvectors
 
-    evecs = eigenvectors(P, n)
+        evecs = eigenvectors(P, n)
 
-    # orthonormalize
-    for i in range(n):
-        evecs[:, i] /= math.sqrt(np.dot(evecs[:, i] * pi, evecs[:, i]))
-    # make first eigenvector positive
-    evecs[:, 0] = np.abs(evecs[:, 0])
+        # orthonormalize
+        for i in range(n):
+           evecs[:, i] /= math.sqrt(np.dot(evecs[:, i] * pi, evecs[:, i]))
+        # make first eigenvector positive
+        evecs[:, 0] = np.abs(evecs[:, 0])
 
-    # Is there a significant complex component?
-    if not np.alltrue(np.isreal(evecs)):
-        warnings.warn(
-            "The given transition matrix has complex eigenvectors, so it doesn't exactly fulfill detailed balance "
-            + "forcing eigenvectors to be real and continuing. Be aware that this is not theoretically solid.")
-    evecs = np.real(evecs)
+        # Is there a significant complex component?
+        if not np.alltrue(np.isreal(evecs)):
+            warnings.warn(
+               "The given transition matrix has complex eigenvectors, so it doesn't exactly fulfill detailed balance "
+                + "forcing eigenvectors to be real and continuing. Be aware that this is not theoretically solid.")
+        evecs = np.real(evecs)
 
     # create initial solution using PCCA+. This could have negative memberships
     (chi, rot_matrix) = _pcca_connected_isa(evecs, n)
@@ -306,20 +324,21 @@ def _pcca_connected(P, n, return_rot=False):
     # These memberships should be nonnegative
     memberships = np.dot(evecs[:, :], rot_matrix)
 
-    # We might still have numerical errors. Force memberships to be in [0,1]
-    # print "memberships unnormalized: ",memberships
-    memberships = np.maximum(0.0, memberships)
-    memberships = np.minimum(1.0, memberships)
-    # print "memberships unnormalized: ",memberships
-    for i in range(0, np.shape(memberships)[0]):
-        memberships[i] /= np.sum(memberships[i])
+    if fix_memberships:
+        # We might still have numerical errors. Force memberships to be in [0,1]
+        # print "memberships unnormalized: ",memberships
+        memberships = np.maximum(0.0, memberships)
+        memberships = np.minimum(1.0, memberships)
+        # print "memberships unnormalized: ",memberships
+        for i in range(0, np.shape(memberships)[0]):
+            memberships[i] /= np.sum(memberships[i])
 
     # print "final chi = \n",chi
 
     return memberships
 
 
-def pcca(P, m):
+def pcca(P, m, reversible=True, fix_memberships=True, mu=None):
     """
     PCCA+ spectral clustering method with optimized memberships [1]_
 
@@ -334,6 +353,20 @@ def pcca(P, m):
 
     m : int
         Number of clusters to group to.
+
+    reversible : bool
+        If reversible=True, run PCCA which is based on the eigendecomposition.
+        If reversible=False, run G-PCCA which is based on the Schur decomposition.
+
+    fix_memberships : bool
+        If True, force memberships to be numerically in the range [0, 1] and to sum to one. If False,
+        keep the small numerical deviations form the optimization.
+
+    mu : ndarray(n), optional
+        Only used if reversible=False. Initial probability vector of the Markov chain. Coarse-graining
+        will preserve the propagation of the initial probability vector projected to the dominant Schur
+        vectors.
+        If reversible=True and mu is None, assume an uniform probability vector.
 
     Returns
     -------
@@ -368,6 +401,9 @@ def pcca(P, m):
 
     # test connectivity
     components = connected_sets(P)
+    if len(components) > 0 and not reversible:
+        warnings.warn('Non-reversible implementation with multiple components is incomple. Dominant spectrum of '
+                      'coarse transition matrix might change.')
     # print "all labels ",labels
     n_components = len(components)  # (n_components, labels) = connected_components(P, connection='strong')
     # print 'n_components'
@@ -427,7 +463,14 @@ def pcca(P, m):
             ipcca += 1
         elif (m_by_component > 1):
             #print "submatrix: ",closed_components_Psub[i]
-            chi[component, ipcca:ipcca + m_by_component] = _pcca_connected(closed_components_Psub[i], m_by_component)
+            if mu is not None:
+                mu_component = mu[component] / mu[component].sum()
+            else:
+                mu_component = None
+            chi[component, ipcca:ipcca + m_by_component] = _pcca_connected(closed_components_Psub[i], m_by_component,
+                                                                           reversible=reversible,
+                                                                           fix_memberships=fix_memberships,
+                                                                           mu=mu_component)
             ipcca += m_by_component
         else:
             raise RuntimeError("Component " + str(i) + " spuriously has " + str(m_by_component) + " pcca sets")
@@ -446,7 +489,7 @@ def pcca(P, m):
             h = hitting_probability(Pabs, closed_states[i])
             for j in range(transition_states.size):
                 # transition states belong to closed states with the hitting probability, and inherit their chi
-                chi[transition_states[j]] += h[transition_states[j]] * chi[closed_states[i]]
+                chi[transition_states[j]] += h[transition_states[j]] * chi[closed_states[i]]  # TODO: shouldnt this be a scalar product?
 
     # check if we have m metastable sets. If less than m, we must raise
     nmeta = np.count_nonzero(chi.sum(axis=0))
@@ -519,7 +562,7 @@ class PCCA(object):
 
     """
 
-    def __init__(self, P, m):
+    def __init__(self, P, m, fix_memberships=True):
         # TODO: can be improved: if we have eigendecomposition already, this can be exploited.
         # remember input
         if issparse(P):
@@ -532,7 +575,7 @@ class PCCA(object):
         # --------------------
         # PCCA memberships
         # TODO: can be improved. pcca computes stationary distribution internally, we don't need to compute it twice.
-        self._M = pcca(P, m)
+        self._M = pcca(P, m, fix_memberships=fix_memberships)
 
         # stationary distribution
         from msmtools.analysis import stationary_distribution as _sd
