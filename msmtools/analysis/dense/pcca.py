@@ -222,6 +222,47 @@ def _valid_schur_dims(T):
     s = np.setdiff1d(np.arange(T.shape[0] + 1), r + 1)
     return s
 
+
+def _generalized_schur_decomposition(C, n, fix_U=True):
+    from scipy.linalg import schur
+    from numpy.linalg import svd, eigh
+    from msmtools.util.sort_real_schur import sort_real_schur
+    m = C.shape[0]
+    N = C.sum()
+    x = C.sum(axis=1) / N
+    y = C.sum(axis=0) / N
+    Ctbar = C - N * x[:, np.newaxis] * y[np.newaxis, :]
+    C0bar = np.diag(N * x) - N * x[:, np.newaxis] * x[np.newaxis, :]
+    l, Q = np.linalg.eigh(C0bar)
+    order = np.argsort(np.abs(l))[::-1][0:-1]  # all but the eigenvalue 0
+    L = Q[:, order].dot(np.diag(l[order] ** -0.5))
+    W = L.T.dot(Ctbar).dot(L)
+    Tbar, U = schur(W, output='real')
+    U, Tbar, ap = sort_real_schur(U, Tbar, z=np.inf, b=0)
+    if n - 1 not in _valid_schur_dims(Tbar):
+        warnings.warn(
+            'Kinetic coarse-graining with %d states cuts through a block of complex conjugate eigenvalues. '
+            'Result might be meaningless.' % n)
+    Tbar = Tbar[0:n - 1, 0:n - 1]
+    if fix_U:
+        UU, _, UVt = svd(U[:, 0:n - 1], full_matrices=False, compute_uv=True)
+        U = UU.dot(UVt)
+    else:
+        U = U[:, 0:n - 1]
+    Vbar = L.dot(U)
+    assert np.allclose(Vbar.T.dot(C0bar).dot(Vbar), np.eye(n - 1))
+    V = np.hstack((np.ones((m, 1)) * N ** -0.5, Vbar - Vbar.T.dot(x)[np.newaxis, :]))
+    C0 = np.diag(N * x)  # debug
+    assert np.allclose(V.T.dot(C0).dot(V), np.eye(n))
+    T = np.vstack((
+        np.hstack(([[1.0]], N ** 0.5 * np.atleast_2d(Vbar.T.dot(y - x)))),
+        np.hstack((np.zeros((n - 1, 1)), Tbar))
+    ))
+    assert np.allclose(V.T.dot(C).dot(V), T)
+    assert np.allclose(C.dot(V), C0.dot(V).dot(T))  # the full generalized Schur problem
+    return V, T
+
+
 def _pcca_connected(P, n, return_rot=False, reversible=True, fix_memberships=True, mu=None):
     """
     PCCA+ spectral clustering method with optimized memberships [1]_
@@ -256,45 +297,27 @@ def _pcca_connected(P, n, return_rot=False, reversible=True, fix_memberships=Tru
         Adv Data Anal Classif 7, 147-179 (2013).
 
     """
+    if reversible:
+        # test connectivity
+        from msmtools.estimation import connected_sets
 
-    # test connectivity
-    from msmtools.estimation import connected_sets
+        labels = connected_sets(P, directed=True)
+        n_components = len(labels)  # (n_components, labels) = connected_components(P, connection='strong')
+        if (n_components > 1):
+            raise ValueError("Transition matrix is disconnected. Cannot use pcca_connected.")
 
-    labels = connected_sets(P, directed=True)
-    n_components = len(labels)  # (n_components, labels) = connected_components(P, connection='strong')
-    if (n_components > 1):
-        raise ValueError("Transition matrix is disconnected. Cannot use pcca_connected.")
+        from msmtools.analysis import stationary_distribution
 
-    from msmtools.analysis import stationary_distribution
+        pi = stationary_distribution(P)
+        # print "statdist = ",pi
 
-    pi = stationary_distribution(P)
-    # print "statdist = ",pi
+        from msmtools.analysis import is_reversible
 
-    from msmtools.analysis import is_reversible
 
-    if not is_reversible(P, mu=pi):
-        if reversible:
+        if not is_reversible(P, mu=pi):
             raise ValueError("Transition matrix does not fulfill detailed balance. "
                              "Make sure to call pcca with a reversible transition matrix estimate")
-        if mu is None:
-            mu = np.ones(P.shape[0]) / P.shape[0]
-        P_whitened = (mu**0.5)[:, np.newaxis]*P*(mu**-0.5)[np.newaxis, :]
-        from scipy.linalg import schur
-        from numpy.linalg import svd
-        from msmtools.util.sort_real_schur import sort_real_schur
-        R, Q = schur(P_whitened, output='real')
-        Q, R, ap = sort_real_schur(Q, R, z=float('inf'), b=0, inplace=True)
-        if n not in _valid_schur_dims(R):
-            warnings.warn(
-                'Kinetic coarse-graining with %d states cuts through a block of complex conjugate eigenvalues. '
-                'Result might be meaningless.' % n)
-        U, _, Vt = svd(Q[:, 0:n], full_matrices=False, compute_uv=True)
-        evecs = U.dot(Vt)  # make sure that the Schur vectors form an ONB after reordering
-        # make first Schur vector positive
-        evecs[:, 0] = np.abs(evecs[:, 0])
-        evecs = (mu**-0.5)[:, np.newaxis]*evecs
 
-    else:
         # right eigenvectors, ordered
         from msmtools.analysis import eigenvectors
 
@@ -302,16 +325,21 @@ def _pcca_connected(P, n, return_rot=False, reversible=True, fix_memberships=Tru
 
         # orthonormalize
         for i in range(n):
-           evecs[:, i] /= math.sqrt(np.dot(evecs[:, i] * pi, evecs[:, i]))
+            evecs[:, i] /= math.sqrt(np.dot(evecs[:, i] * pi, evecs[:, i]))
         # make first eigenvector positive
         evecs[:, 0] = np.abs(evecs[:, 0])
 
         # Is there a significant complex component?
         if not np.alltrue(np.isreal(evecs)):
             warnings.warn(
-               "The given transition matrix has complex eigenvectors, so it doesn't exactly fulfill detailed balance "
+                "The given transition matrix has complex eigenvectors, so it doesn't exactly fulfill detailed balance "
                 + "forcing eigenvectors to be real and continuing. Be aware that this is not theoretically solid.")
         evecs = np.real(evecs)
+
+    else:  # non-reversible (G-PCCA)
+        if mu is None:
+            mu = np.ones(P.shape[0]) / P.shape[0]
+        evecs, T = _generalized_schur_decomposition(C=mu[:, np.newaxis]*P, n=n)
 
     # create initial solution using PCCA+. This could have negative memberships
     (chi, rot_matrix) = _pcca_connected_isa(evecs, n)
@@ -384,6 +412,9 @@ def pcca(P, m, reversible=True, fix_memberships=True, mu=None):
     [2] F. Noe, multiset PCCA and HMMs, in preparation.
 
     """
+    if not reversible:
+        return _pcca_connected(P, m, return_rot=False, reversible=False, fix_memberships=fix_memberships, mu=mu)
+
     # imports
     from msmtools.estimation import connected_sets
     from msmtools.analysis import eigenvalues, is_transition_matrix, hitting_probability
@@ -401,9 +432,9 @@ def pcca(P, m, reversible=True, fix_memberships=True, mu=None):
 
     # test connectivity
     components = connected_sets(P)
-    if len(components) > 0 and not reversible:
-        warnings.warn('Non-reversible implementation with multiple components is incomple. Dominant spectrum of '
-                      'coarse transition matrix might change.')
+    #if len(components) > 0 and not reversible:
+    #    warnings.warn('Non-reversible implementation with multiple components is incomple. Dominant spectrum of '
+    #                  'coarse transition matrix might change.')
     # print "all labels ",labels
     n_components = len(components)  # (n_components, labels) = connected_components(P, connection='strong')
     # print 'n_components'

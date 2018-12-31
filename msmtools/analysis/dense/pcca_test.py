@@ -204,19 +204,22 @@ class TestPCCA(unittest.TestCase):
                              [1., 0.]])
         np.testing.assert_equal(chi, expected)
 
+        chi = pcca(transition_matrix, 2, reversible=False)
+        assert np.allclose(chi, expected) or np.allclose(chi, expected[:, [1, 0]])  # ordering of state unknown
+
+
     def test_pcca_non_reversible(self):
         # general non-reversible matrix
         P = np.random.rand(8, 8)
         P = P / P.sum(axis=1)[:, np.newaxis]
 
-        if False:
-            # add some transition state
-            Pex = np.zeros((9, 9))
-            Pex[0:8, 0:8] = P
-            e = 0.001
-            Pex[8, 7] = e
-            Pex[8, 8] = 1 - e
-            P = Pex
+        # add some transition state
+        Pex = np.zeros((9, 9))
+        Pex[0:8, 0:8] = P
+        e = 0.001
+        Pex[8, 7] = e
+        Pex[8, 8] = 1 - e
+        P = Pex
 
         # assert not msmtools.analysis.is_reversible(P)
         evals = np.linalg.eig(P)[0]
@@ -236,6 +239,7 @@ class TestPCCA(unittest.TestCase):
         np.testing.assert_allclose(dom_evals, dom_evals_c)
         np.testing.assert_allclose(P_c.sum(axis=1), 1.0)
         np.testing.assert_array_less(-M-1.E-7, 0.0)
+
 
         mu = np.random.rand(P.shape[0]) + 0.01
         mu = mu / mu.sum()
