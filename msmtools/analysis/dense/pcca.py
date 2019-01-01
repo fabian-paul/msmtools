@@ -241,7 +241,7 @@ def _generalized_schur_decomposition(C, n, fix_U=True, var_cutoff=1.E-8):
     L = Q[:, order].dot(np.diag(l[order] ** -0.5))
     W = L.T.dot(Ctbar).dot(L)
     Tbar, U = schur(W, output='real')
-    U, Tbar, ap = sort_real_schur(U, Tbar, z=np.inf, b=0)
+    U, Tbar, ap = sort_real_schur(U, Tbar, z=np.inf, b=m)
     if n - 1 not in _valid_schur_dims(Tbar):
         warnings.warn(
             'Kinetic coarse-graining with %d states cuts through a block of complex conjugate eigenvalues. '
