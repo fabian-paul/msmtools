@@ -223,7 +223,9 @@ def _valid_schur_dims(T):
     return s
 
 
-def _generalized_schur_decomposition(C, n, fix_U=True, var_cutoff=1.E-8):
+def _generalized_schur_decomposition(C, n, fix_U=True, var_cutoff=1.E-8, compute_T=False):
+    if __debug__:
+        compute_T = True
     from scipy.linalg import schur
     from numpy.linalg import svd, eigh
     from msmtools.util.sort_real_schur import sort_real_schur
@@ -233,14 +235,19 @@ def _generalized_schur_decomposition(C, n, fix_U=True, var_cutoff=1.E-8):
     y = C.sum(axis=0) / N
     Ctbar = C - N * x[:, np.newaxis] * y[np.newaxis, :]
     C0bar = np.diag(N * x) - N * x[:, np.newaxis] * x[np.newaxis, :]
+    if not __debug__: del C
     l, Q = np.linalg.eigh(C0bar)
+    if not __debug__: del C0bar
     order_asc = np.argsort(np.abs(l))
     i0 = next(i for i, v in enumerate(l[order_asc]) if abs(v) > var_cutoff)
     order = order_asc[i0:][::-1]
     assert np.all(np.abs(l[order]) > var_cutoff)
     L = Q[:, order].dot(np.diag(l[order] ** -0.5))
+    del Q
     W = L.T.dot(Ctbar).dot(L)
+    if not __debug__: del Ctbar
     Tbar, U = schur(W, output='real')
+    del W
     U, Tbar, ap = sort_real_schur(U, Tbar, z=np.inf, b=m)
     if np.any(np.array(ap) > 1):
         warnings.warn('Reordering of Schur matrix was inaccurate.')
@@ -248,24 +255,34 @@ def _generalized_schur_decomposition(C, n, fix_U=True, var_cutoff=1.E-8):
         warnings.warn(
             'Kinetic coarse-graining with %d states cuts through a block of complex conjugate eigenvalues. '
             'Result might be meaningless.' % n)
-    Tbar = Tbar[0:n - 1, 0:n - 1]
+    if not compute_T: del Tbar
     if fix_U:
         UU, _, UVt = svd(U[:, 0:n - 1], full_matrices=False, compute_uv=True)
         U = UU.dot(UVt)
     else:
         U = U[:, 0:n - 1]
     Vbar = L.dot(U)
-    assert np.allclose(Vbar.T.dot(C0bar).dot(Vbar), np.eye(n - 1))
+    del L
+    del U
     V = np.hstack((np.ones((m, 1)) * N ** -0.5, Vbar - Vbar.T.dot(x)[np.newaxis, :]))
-    C0 = np.diag(N * x)  # debug
-    assert np.allclose(V.T.dot(C0).dot(V), np.eye(n))
-    T = np.vstack((
-        np.hstack(([[1.0]], N ** 0.5 * np.atleast_2d(Vbar.T.dot(y - x)))),
-        np.hstack((np.zeros((n - 1, 1)), Tbar))
-    ))
-    assert np.allclose(V.T.dot(C).dot(V), T)
-    assert np.allclose(C.dot(V), C0.dot(V).dot(T))  # the full generalized Schur problem
-    return V, T
+    if not __debug__ and not compute_T: del Vbar
+    if compute_T:
+        Tbar = Tbar[0:n - 1, 0:n - 1]
+        assert np.allclose(Vbar.T.dot(C0bar).dot(Vbar), np.eye(n - 1))
+        if __debug__:
+            C0 = np.diag(N * x)
+            assert np.allclose(V.T.dot(C0).dot(V), np.eye(n))
+        T = np.vstack((
+            np.hstack(([[1.0]], N ** 0.5 * np.atleast_2d(Vbar.T.dot(y - x)))),
+            np.hstack((np.zeros((n - 1, 1)), Tbar))
+        ))
+        del Vbar
+        del Tbar
+        assert np.allclose(V.T.dot(C).dot(V), T)
+        assert np.allclose(C.dot(V), C0.dot(V).dot(T))  # the full generalized Schur problem
+        return V, T
+    else:
+        return V, None
 
 
 def _pcca_connected(P, n, return_rot=False, reversible=True, fix_memberships=True, mu=None):
