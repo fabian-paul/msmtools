@@ -258,13 +258,13 @@ def _generalized_schur_decomposition(C, n, mu=None, fix_U=True, var_cutoff=1.E-8
     del Ctbar
     Tbar, U = schur(W, output='real')
     del W
-    U, Tbar, ap = sort_real_schur(U, Tbar, z=np.inf, b=m)
+    U, Tbar, ap = sort_real_schur(U, Tbar, z=np.inf, b=n)
     if np.any(np.array(ap) > 1):
         warnings.warn('Reordering of Schur matrix was inaccurate.')
     if n - 1 not in _valid_schur_dims(Tbar):
         warnings.warn(
             'Kinetic coarse-graining with %d states cuts through a block of complex conjugate eigenvalues. '
-            'Result might be meaningless.' % n)
+            'Result might be meaningless. Please increase number of states by one.' % n)
     if not compute_T: del Tbar
     if fix_U:
         UU, _, UVt = svd(U[:, 0:n - 1], full_matrices=False, compute_uv=True)
