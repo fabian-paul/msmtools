@@ -29,7 +29,7 @@ import unittest
 import numpy as np
 
 from msmtools.util.numeric import assert_allclose
-from .pcca import pcca
+from .pcca import pcca, _pcca_connected
 
 
 class TestPCCA(unittest.TestCase):
@@ -231,7 +231,7 @@ class TestPCCA(unittest.TestCase):
             n += 1
         dom_evals = sorted_evals[0:n]
 
-        M = pcca(P, n, reversible=False, fix_memberships=False)
+        M = _pcca_connected(P, n, reversible=False, fix_memberships=False)
         P_c = np.linalg.inv(M.T.dot(M)).dot(M.T.dot(P).dot(M))
         evals_c = np.linalg.eig(P_c)[0]
         order_c = np.argsort(np.abs(evals_c))[::-1]
@@ -243,7 +243,7 @@ class TestPCCA(unittest.TestCase):
 
         mu = np.random.rand(P.shape[0]) + 0.01
         mu = mu / mu.sum()
-        M = pcca(P, n, reversible=False, fix_memberships=False, mu=mu)
+        M = _pcca_connected(P, n, reversible=False, fix_memberships=False, mu=mu)
         MU = np.diag(mu)
         P_c = np.linalg.inv(M.T.dot(MU).dot(M)).dot(M.T.dot(MU).dot(P).dot(M))
         evals_c = np.linalg.eig(P_c)[0]

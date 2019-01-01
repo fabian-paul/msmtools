@@ -223,14 +223,23 @@ def _valid_schur_dims(T):
     return s
 
 
-def _generalized_schur_decomposition(C, n, fix_U=True, var_cutoff=1.E-8, compute_T=False):
-    if __debug__:
-        compute_T = True
+def _generalized_schur_decomposition(C, n, mu=None, fix_U=True, var_cutoff=1.E-8, compute_T=False, normalize=True):
+    from msmtools.analysis import is_transition_matrix
     from scipy.linalg import schur
     from numpy.linalg import svd, eigh
     from msmtools.util.sort_real_schur import sort_real_schur
+    if __debug__:
+        compute_T = True
+    if mu is not None:
+        if not is_transition_matrix(C):
+            warnings.warn('You supplied a probability distribution but the input matrix is not a transition matrix. '
+                          'Not exactly sure how to combine these two objects. Proceeding anyway...')
+        C = mu[:, np.newaxis]*C
     m = C.shape[0]
     N = C.sum()
+    if normalize and not np.allclose(N, 1):
+        C = C/N  # for _opt_soft (_opt_soft is not scale invariant)
+        N = 1  # for _opt_soft
     x = C.sum(axis=1) / N
     y = C.sum(axis=0) / N
     Ctbar = C - N * x[:, np.newaxis] * y[np.newaxis, :]
@@ -355,9 +364,7 @@ def _pcca_connected(P, n, return_rot=False, reversible=True, fix_memberships=Tru
         evecs = np.real(evecs)
 
     else:  # non-reversible (G-PCCA)
-        if mu is None:
-            mu = np.ones(P.shape[0]) / P.shape[0]
-        evecs, T = _generalized_schur_decomposition(C=mu[:, np.newaxis]*P, n=n)
+        evecs, _ = _generalized_schur_decomposition(C=P, n=n, mu=mu)
 
     # create initial solution using PCCA+. This could have negative memberships
     (chi, rot_matrix) = _pcca_connected_isa(evecs, n)
@@ -381,6 +388,23 @@ def _pcca_connected(P, n, return_rot=False, reversible=True, fix_memberships=Tru
 
     # print "final chi = \n",chi
 
+    return memberships
+
+
+def gpcca(C, n, fix_memberships=True, mu=None, dummy=0):
+    m = C.shape[0]
+    c = C.sum(axis=1)
+    vset = (c > 0)  # compute vset
+    C_vset = C[vset, :][:, vset]  # restrict to vset
+    del C
+    if mu is not None:
+        mu_vset = mu[vset]
+    else:
+        mu_vset = None
+    memberships_vset = _pcca_connected(C_vset, n, reversible=False, fix_memberships=fix_memberships, mu=mu_vset)
+    del C_vset
+    memberships = np.zeros((m, n)) + dummy
+    memberships[vset, :] = memberships_vset
     return memberships
 
 
@@ -430,9 +454,6 @@ def pcca(P, m, reversible=True, fix_memberships=True, mu=None):
     [2] F. Noe, multiset PCCA and HMMs, in preparation.
 
     """
-    if not reversible:
-        return _pcca_connected(P, m, return_rot=False, reversible=False, fix_memberships=fix_memberships, mu=mu)
-
     # imports
     from msmtools.estimation import connected_sets
     from msmtools.analysis import eigenvalues, is_transition_matrix, hitting_probability
