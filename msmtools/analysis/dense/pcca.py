@@ -223,7 +223,7 @@ def _valid_schur_dims(T):
     return s
 
 
-def _generalized_schur_decomposition(C, n, fix_U=True):
+def _generalized_schur_decomposition(C, n, fix_U=True, var_cutoff=1.E-8):
     from scipy.linalg import schur
     from numpy.linalg import svd, eigh
     from msmtools.util.sort_real_schur import sort_real_schur
@@ -234,7 +234,10 @@ def _generalized_schur_decomposition(C, n, fix_U=True):
     Ctbar = C - N * x[:, np.newaxis] * y[np.newaxis, :]
     C0bar = np.diag(N * x) - N * x[:, np.newaxis] * x[np.newaxis, :]
     l, Q = np.linalg.eigh(C0bar)
-    order = np.argsort(np.abs(l))[::-1][0:-1]  # all but the eigenvalue 0
+    order_asc = np.argsort(np.abs(l))
+    i0 = next(i for i, v in enumerate(l[order_asc]) if abs(v) > var_cutoff)
+    order = order_asc[i0:][::-1]
+    assert np.all(np.abs(l[order]) > var_cutoff)
     L = Q[:, order].dot(np.diag(l[order] ** -0.5))
     W = L.T.dot(Ctbar).dot(L)
     Tbar, U = schur(W, output='real')
